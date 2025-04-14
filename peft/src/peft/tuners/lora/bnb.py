@@ -48,7 +48,7 @@ if is_bnb_available():
             super().__init__()
             LoraLayer.__init__(self, base_layer)
             self.fan_in_fan_out = False
-            
+
             self.use_moe_lora = kwargs["use_moe_lora"]
 
             self._active_adapter = adapter_name
@@ -63,25 +63,23 @@ if is_bnb_available():
                 use_moe_lora = self.use_moe_lora,
                 num_experts = kwargs["num_experts"]
             )
-            
+
             self.shrinkable_width = False
-            
 
         def set_width_mask(self, width_mask, output_bias=None):
             assert not (width_mask is None and output_bias is None)
-            
+
             self.width_mask = width_mask
             self.output_bias = output_bias
-            
+
             self.shrinkable_width = True
             self.width_ratio = 1
-            
 
+        @torch.jit.export
         def set_width_ratio(self, width_ratio):
             assert hasattr(self, 'width_mask')
             self.width_ratio = width_ratio
-            
-            
+
         def merge(self, safe_merge: bool = False, adapter_names: Optional[list[str]] = None) -> None:
             """
             Merge the active adapter weights into the base weights
@@ -227,23 +225,20 @@ if is_bnb_available():
 
         def init_moe(self, n_embed, num_experts, top_k):
             from .moe import SparseMoE
-            
+
             self.num_experts = num_experts
             self.top_k = top_k
             self.moe_feature = None
 
             self.lora_sparsemoe = SparseMoE(n_embed, num_experts, top_k)
-            
-            
+
         def set_moe_feature(self, moe_feature):
             self.moe_feature = moe_feature
-            
-            
+
         def set_moe_gate(self, gating_scores, hard_indices):
             self.gating_scores = gating_scores
             self.hard_indices = hard_indices
-            
-            
+
         def forward(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
             self._check_forward_args(x, *args, **kwargs)
             adapter_names = kwargs.pop("adapter_names", None)
@@ -269,7 +264,7 @@ if is_bnb_available():
                     requires_conversion = not torch.is_autocast_enabled()
                     if requires_conversion:
                         expected_dtype = result.dtype
-                        
+
                         if self.use_moe_lora:
                             x = x.to(lora_A[0].weight.dtype)
                         else:
@@ -278,21 +273,21 @@ if is_bnb_available():
                     if self.use_moe_lora:
                         gating_scores = self.gating_scores
                         hard_indices = self.hard_indices
-                        
+
                         weight_lora_a = sum([lora_A[indice].weight * gating_scores[indice] for indice in hard_indices])
-    
+
                         output_lora_a = nn.functional.linear(dropout(x), weight_lora_a)
 
                         weight_lora_b = sum([lora_B[indice].weight * gating_scores[indice] for indice in hard_indices])
-                        
+
                         output = nn.functional.linear(output_lora_a, weight_lora_b) * scaling
-                    
+
                     else:
                         if not self.use_dora[active_adapter]:
                             output = lora_B(lora_A(dropout(x))) * scaling
                         else:
                             output = self._apply_dora(x, lora_A, lora_B, scaling, active_adapter)
-                            
+
                     if requires_conversion:
                         output = output.to(expected_dtype)
 
@@ -301,16 +296,15 @@ if is_bnb_available():
             if self.shrinkable_width:
                 if self.width_mask is not None:
                     result = result * self.width_mask[self.width_ratio].reshape(1, 1, -1).to(result)
-                
+
                 if self.output_bias is not None:
                     result = result + self.output_bias[self.width_ratio].reshape(1, 1, -1).to(result)
-                
+
             return result
 
         def __repr__(self) -> str:
             rep = super().__repr__()
             return "lora." + rep
-
 
     def dispatch_bnb_8bit(target: torch.nn.Module, adapter_name: str, **kwargs):
         new_module = None
@@ -387,7 +381,7 @@ if is_bnb_4bit_available():
             self.shrinkable_width = True
             self.width_ratio = 1
             
-
+        @torch.jit.export
         def set_width_ratio(self, width_ratio):
             assert hasattr(self, 'width_mask')
             self.width_ratio = width_ratio

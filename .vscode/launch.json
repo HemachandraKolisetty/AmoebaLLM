@@ -1,0 +1,56 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python Debugger: Current File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "HF_HOME": "/serenity/scratch/hkolisetty6/.cache/huggingface",
+                "CUDA_VISIBLE_DEVICES": "2"
+            },
+            "args": [
+                "--model_name_or_path", "meta-llama/Llama-2-7b-hf",
+                "--output_dir", "amoeba_llama2",
+                "--do_predict", "True",
+                "--do_eval", "False",
+                "--do_mmlu_eval", "False",
+                "--do_train", "False",
+                "--enable_shrinking",
+                "--min_num_layer", "20",
+                "--shrinking_method", "calib_dp",
+                "--shrinking_file", "dp_selection_strategy.npy",
+                "--shrinkable_width",
+                "--width_choice", "[1,7/8,3/4,5/8,1/2]",
+                "--prune_width_method", "flap",
+                "--use_moe_lora",
+                "--moe_num_expert", "5",
+                "--moe_topk", "2",
+                "--eval_num_layer", "32",
+                "--eval_num_width", "1",
+                "--predict_with_generate", "True",
+                "--max_new_tokens", "500",
+                "--per_device_eval_batch_size", "2",
+                "--eval_dataset_size", "5",
+            ],
+            // "args": [
+            //     "--model_name_or_path", "meta-llama/Llama-2-7b-hf",
+            //     "--fp16",
+            //     "--output_dir", "./output/width_calib ",
+            //     "--do_train", "False",
+            //     "--do_eval", "False", 
+            //     "--use_auth_token", 
+            //     "--no_eval_orig",
+            //     "--width_calib",
+            //     "--num_calib_sample", "512",
+            //     "--prune_width_method", "flap"
+            // ]
+        }
+    ]
+}

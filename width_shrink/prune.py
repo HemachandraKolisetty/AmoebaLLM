@@ -517,8 +517,9 @@ def prune_flap(args, model, tokenizer, device=torch.device("cuda:0")):
         if (isinstance(module, torch.nn.Linear) or isinstance(module, Linear4bit) or isinstance(module, Linear8bitLt)) and 'lm_head' not in name and 'lora' not in name and 'base_layer' not in name:
             mask[name] = {}
             bias[name] = {}
-            
-    pruning_ratio_list = [0.8, 0.65, 0.5] # [1, 7/8, 3/4, 5/8, 1/2]
+    
+    # hkolisetty6
+    pruning_ratio_list = [1, 7/8, 3/4, 5/8, 1/2]
                 
     for pruning_ratio in pruning_ratio_list:  ## meaning the remaining ratio
         if args.structure in ["AL-MM", "AL-AM"]:

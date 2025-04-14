@@ -994,6 +994,7 @@ class LlamaModel(LlamaPreTrainedModel):
         # Initialize weights and apply final processing
         self.post_init()                    
     
+    @torch.jit.export
     def set_active_layers(self, active_layers_attn, active_layers_mlp):  # [num_layer] with boolean values
         if type(active_layers_attn) is not torch.Tensor:
             active_layers_attn = torch.tensor(active_layers_attn)
@@ -1257,6 +1258,7 @@ class LlamaForCausalLM(LlamaPreTrainedModel):
     def get_decoder(self):
         return self.model
 
+    @torch.jit.export
     def set_active_layers(self, active_layers_attn, active_layers_mlp):  # [num_layer] with boolean values
         if type(active_layers_attn) is not torch.Tensor:
             active_layers_attn = torch.tensor(active_layers_attn)

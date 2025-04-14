@@ -35,7 +35,8 @@ from transformers import (
     set_seed,
     Seq2SeqTrainer,
     BitsAndBytesConfig,
-    LlamaTokenizer
+    LlamaTokenizer,
+    StoppingCriteria
 )
 
 from datasets import load_dataset, Dataset, DatasetDict
@@ -106,7 +107,7 @@ class ModelArguments:
 @dataclass
 class DataArguments:
     eval_dataset_size: int = field(
-        default=1024, metadata={"help": "Size of validation dataset."}
+        default=34, metadata={"help": "Size of validation dataset."}
     )
     
     max_train_samples: Optional[int] = field(
@@ -124,7 +125,7 @@ class DataArguments:
         },
     )
     source_max_len: int = field(
-        default=1024,
+        default=256,
         metadata={"help": "Maximum source sequence length. Sequences will be right padded (and possibly truncated)."},
     )
     target_max_len: int = field(
@@ -234,7 +235,7 @@ class TrainingArguments(transformers.Seq2SeqTrainingArguments):
     remove_unused_columns: bool = field(default=False, metadata={"help": 'Removed unused columns. Needed to make this codebase work.'})
     max_grad_norm: float = field(default=0.3, metadata={"help": 'Gradient clipping max norm. This is tuned and works well for all models tested.'})
     gradient_checkpointing: bool = field(default=True, metadata={"help": 'Use gradient checkpointing. You want to use this.'})
-    do_train: bool = field(default=True, metadata={"help": 'To train or not to train, that is the question?'})
+    do_train: bool = field(default=False, metadata={"help": 'To train or not to train, that is the question?'})
     no_eval_orig: bool = field(default=False, metadata={"help": 'do not eval the original test dataset corresponding to the training dataset'})
     lr_scheduler_type: str = field(default='constant', metadata={"help": 'Learning rate schedule. Constant a bit better than cosine, and has advantage for analysis'})
     warmup_ratio: float = field(default=0.03, metadata={"help": 'Fraction of steps to do a warmup for'})
@@ -342,6 +343,7 @@ class GenerationArguments:
     length_penalty: Optional[float] = field(default=1.0)
     no_repeat_ngram_size: Optional[int] = field(default=0)
 
+# hkolisetty6: NOT NEEDED for inference
 def find_all_linear_names(args, model):
     cls = bnb.nn.Linear4bit if args.bits == 4 else (bnb.nn.Linear8bitLt if args.bits == 8 else torch.nn.Linear)
 
@@ -355,7 +357,7 @@ def find_all_linear_names(args, model):
         lora_module_names.remove('lm_head')
     return list(lora_module_names)
 
-
+# hkolisetty6: NOT NEEDED for inference
 class SavePeftModelCallback(transformers.TrainerCallback):
     def save_model(self, args, state, kwargs):
         print('Saving PEFT checkpoint...')
@@ -382,6 +384,46 @@ class SavePeftModelCallback(transformers.TrainerCallback):
 
         touch(join(args.output_dir, 'completed'))
         self.save_model(args, state, kwargs)
+
+# hkolisetty6: NEWLY ADDED
+def get_accelerate_model_for_inference(args, checkpoint_dir):
+    if torch.cuda.is_available():
+        n_gpus = torch.cuda.device_count()
+    
+    max_memory = f'{args.max_memory_MB}MB'
+    max_memory = {i: max_memory for i in range(n_gpus)}
+    device_map = "auto"
+
+    print(f'loading base model {args.model_name_or_path}...')
+    compute_dtype = (torch.float16 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32))
+
+    shrink_config = {'enable_shrinking': args.enable_shrinking, 
+                     "shrinkable_width": args.shrinkable_width,
+                     "shrinking_method": args.shrinking_method,
+                     "shrinking_file": args.shrinking_file,
+                     "mask_dtype": "torch.float16" if args.fp16 else ("torch.bfloat16" if args.bf16 else "torch.float32")}
+    
+    model = AutoModelForCausalLM.from_pretrained(
+        args.model_name_or_path,
+        cache_dir=args.cache_dir,
+        device_map=device_map,
+        max_memory=max_memory,
+        quantization_config=BitsAndBytesConfig(
+            load_in_4bit=args.bits == 4,
+            load_in_8bit=args.bits == 8,
+            llm_int8_threshold=6.0,
+            llm_int8_has_fp16_weight=False,
+            bnb_4bit_compute_dtype=compute_dtype,
+            bnb_4bit_use_double_quant=args.double_quant,
+            bnb_4bit_quant_type=args.quant_type,
+        ) if not args.full_finetune else None,
+        torch_dtype=(torch.float32 if args.fp16 else (torch.bfloat16 if args.bf16 else torch.float32)),
+        trust_remote_code=args.trust_remote_code,
+        use_auth_token=args.use_auth_token,
+        shrink_config = shrink_config
+    )
+
+
 
 def get_accelerate_model(args, checkpoint_dir):
     if torch.cuda.is_available():
@@ -589,6 +631,7 @@ class DataCollatorForCausalLM(object):
             max_length=self.source_max_len,
             truncation=True,
             add_special_tokens=False,
+            padding='max_length', # hkolisetty6: pad to max length to ensure constant length across batches
         )
         tokenized_targets = self.tokenizer(
             targets,
@@ -629,7 +672,7 @@ class DataCollatorForCausalLM(object):
         
         data_dict = {
             'input_ids': input_ids,
-            'source_ids': source_ids,
+            # 'source_ids': source_ids, # Not required for inference
             # 'source_labels': source_labels,
             'attention_mask':input_ids.ne(self.tokenizer.pad_token_id),
         }
@@ -859,7 +902,49 @@ def get_last_checkpoint(checkpoint_dir):
         return checkpoint_dir, is_completed # checkpoint found!
     return None, False # first training
 
+class TokenTimingStoppingCriteria(StoppingCriteria):
+    def __init__(self):
+        self.prev_token_pred_time = time.perf_counter()
+        self.ttft = {} # batch_num -> (batch_size, time)
+        self.tbt = {} # batch_num -> (batch_size, num_tokens, average_time)
+        self.num_tokens = 0
+        self.batch_num = 0
+        self.prev_batch_size = None
+        self.total_time = 0
+        self.prev_input_ids = None
+        self.window_size = 5
 
+    def __call__(self, input_ids, scores, **kwargs):
+        batch_size, _ = input_ids.shape
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        
+        current_time = time.perf_counter()
+        
+        if self.prev_input_ids is None or \
+            self.prev_input_ids.shape[0] != batch_size or \
+                ~torch.all(self.prev_input_ids[:, -self.window_size:] == input_ids[:, -self.window_size - 1 : -1]):
+            
+            # print input_ids shape
+            print(f"input_ids shape: {input_ids.shape}")
+
+            if self.prev_batch_size is not None:
+                avg_time = self.total_time / self.num_tokens
+                self.tbt[self.batch_num] = (self.prev_batch_size, self.num_tokens, avg_time)
+                self.total_time = 0
+
+            self.batch_num += 1
+            self.ttft[self.batch_num] = (batch_size, current_time - self.prev_token_pred_time)
+            self.num_tokens = 0
+            self.prev_batch_size = batch_size
+        else:
+            self.num_tokens += 1
+            self.total_time += current_time - self.prev_token_pred_time
+
+        self.prev_input_ids = input_ids
+        self.prev_token_pred_time = current_time
+        return torch.full((input_ids.shape[0],), False, device=input_ids.device, dtype=torch.bool)
       
 def train():
     hfparser = transformers.HfArgumentParser((
@@ -1044,7 +1129,7 @@ def train():
         all_metrics.update(metrics)
 
                 
-    if args.do_eval and not args.no_eval_orig:
+    if (args.do_eval and not args.no_eval_orig) or args.do_predict:
         if args.enable_shrinking:
             active_layers_attn_list = active_layers_mlp_list = trainer.sandwich_sampling(model.config.num_hidden_layers, args.min_num_layer, 0)
 
@@ -1054,12 +1139,12 @@ def train():
                 for module in model.modules():
                     if hasattr(module, 'set_width_ratio'):
                         module.set_width_ratio(width_ratio=eval(args.width_choice)[0])
-                                
-        logger.info("*** Evaluate ***")
-        metrics = trainer.evaluate(metric_key_prefix="eval")
-        trainer.log_metrics("eval", metrics)
-        trainer.save_metrics("eval", metrics)
-        all_metrics.update(metrics)
+        if args.do_eval:                        
+            logger.info("*** Evaluate ***")
+            metrics = trainer.evaluate(metric_key_prefix="eval")
+            trainer.log_metrics("eval", metrics)
+            trainer.save_metrics("eval", metrics)
+            all_metrics.update(metrics)
         
 
     if args.layer_calib_dp:
@@ -1224,8 +1309,9 @@ def train():
                             module.set_width_ratio(width_ratio=width)
                     
                     model.set_active_layers(active_layers_attn, active_layers_mlp, width=width)
-                
-                    all_metrics = eval_all(args, model, trainer, tokenizer, mmlu_dataset, abcd_idx=abcd_idx, accuracy=accuracy, all_metrics=all_metrics, suffix=f'_l{num_layer}w{width}')
+
+                    if args.do_eval:
+                        all_metrics = eval_all(args, model, trainer, tokenizer, mmlu_dataset, abcd_idx=abcd_idx, accuracy=accuracy, all_metrics=all_metrics, suffix=f'_l{num_layer}w{width}')
                         
     else:
         all_metrics = eval_all(args, model, trainer, tokenizer, mmlu_dataset, abcd_idx=abcd_idx, accuracy=accuracy, all_metrics=all_metrics)
@@ -1233,10 +1319,22 @@ def train():
     # Prediction
     if args.do_predict:
         logger.info("*** Predict ***")
-        prediction_output = trainer.predict(test_dataset=data_module['predict_dataset'],metric_key_prefix="predict")
+        timing_stopping_criteria = TokenTimingStoppingCriteria()
+        prediction_output = trainer.predict(test_dataset=data_module['predict_dataset'],metric_key_prefix="predict", stopping_criteria=[timing_stopping_criteria])
+        
+        print(timing_stopping_criteria.ttft)
+        print(timing_stopping_criteria.tbt)
+
         prediction_metrics = prediction_output.metrics
         predictions = prediction_output.predictions
+        # predictions = prediction_output.label_ids
         predictions = np.where(predictions != -100, predictions, tokenizer.pad_token_id)
+        
+        # predictions = [ 
+        #     ''.join(tokenizer.batch_decode(prediction.astype(int), skip_special_tokens=True, clean_up_tokenization_spaces=True))
+        #     for prediction in predictions
+        # ]
+
         predictions = tokenizer.batch_decode(
             predictions, skip_special_tokens=True, clean_up_tokenization_spaces=True
         )

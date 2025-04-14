@@ -152,7 +152,7 @@ class LoraModel(BaseTuner):
             
             self.lora_sparsemoe.to(next(self.parameters()).device)
             
-            
+    @torch.jit.export
     def set_active_layers(self, active_layers_attn, active_layers_mlp, width=None):  # [num_layer] with boolean values
         if type(active_layers_attn) is not torch.Tensor:
             active_layers_attn = torch.tensor(active_layers_attn)
