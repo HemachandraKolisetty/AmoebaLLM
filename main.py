@@ -100,7 +100,7 @@ class ModelArguments:
         metadata={"help": "Enable unpickling of arbitrary code in AutoModelForCausalLM#from_pretrained."}
     )
     use_auth_token: Optional[bool] = field(
-        default=False,
+        default=True,
         metadata={"help": "Enables using Huggingface auth token from Git Credentials."}
     )
 
@@ -927,7 +927,7 @@ class TokenTimingStoppingCriteria(StoppingCriteria):
                 ~torch.all(self.prev_input_ids[:, -self.window_size:] == input_ids[:, -self.window_size - 1 : -1]):
             
             # print input_ids shape
-            print(f"input_ids shape: {input_ids.shape}")
+            # print(f"input_ids shape: {input_ids.shape}")
 
             if self.prev_batch_size is not None:
                 avg_time = self.total_time / self.num_tokens
@@ -943,7 +943,7 @@ class TokenTimingStoppingCriteria(StoppingCriteria):
             self.total_time += current_time - self.prev_token_pred_time
 
         self.prev_input_ids = input_ids
-        self.prev_token_pred_time = current_time
+        self.prev_token_pred_time = time.perf_counter()
         return torch.full((input_ids.shape[0],), False, device=input_ids.device, dtype=torch.bool)
       
 def train():

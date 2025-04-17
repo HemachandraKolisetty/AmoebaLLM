@@ -12,7 +12,7 @@
             "console": "integratedTerminal",
             "justMyCode": false,
             "env": {
-                "HF_HOME": "/serenity/scratch/hkolisetty6/.cache/huggingface",
+                "HF_HOME": "/home/dsanyal7/.cache/huggingface",
                 "CUDA_VISIBLE_DEVICES": "2"
             },
             "args": [
